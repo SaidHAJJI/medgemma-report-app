@@ -1,0 +1,25 @@
+ 
+ {
+     "instances": [
+         {
+           "@requestFormat": "chatCompletions",
+           "messages": [
+               {
+                   "role": "system",
+                   "content": [{"type": "text", "text": "You are a helpful medical assistant AI."}]
+               },
+               {
+                   "role": "user",
+                   "content": [
+                       {
+                           "type": "text",
+                           "text": "What are common causes of shortness of breath?"
+                       }
+                   ]
+               }
+           ],
+           "max_tokens": 250
+         }
+     ]
+ }
+

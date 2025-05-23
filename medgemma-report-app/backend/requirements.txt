@@ -3,4 +3,4 @@ python-dotenv
 google-cloud-aiplatform
 gunicorn
 Flask-CORS
-
+google-auth
