@@ -1,0 +1,10 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {},
+  "scripts": {
+    "start": "echo \"Run 'npm start' or 'yarn start' after 'create-react-app . --template minimal' or similar\"",
+    "build": "echo \"Run 'npm run build' or 'yarn build' after CRA setup\""
+  }
+}

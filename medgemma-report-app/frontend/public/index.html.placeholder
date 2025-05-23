@@ -1,0 +1,4 @@
+// Minimal index.html, create-react-app will generate a proper one
+// You can run 'npx create-react-app . --template minimal' in this 'frontend' directory
+// or 'npx create-react-app . ' for the standard template.
+

@@ -1,0 +1,15 @@
+// Minimal index.js, create-react-app will generate a proper one
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+// import './index.css'; // CRA will create this
+// import App from './App'; // CRA will create/use this
+// import reportWebVitals from './reportWebVitals'; // CRA will create this
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  <React.StrictMode>
+    <div>Frontend Placeholder. Initialize with create-react-app.</div>
+  </React.StrictMode>
+);
+// reportWebVitals();
+
