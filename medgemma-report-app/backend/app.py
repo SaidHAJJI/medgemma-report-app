@@ -2,162 +2,175 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 from dotenv import load_dotenv
-import json # Importer le module json pour une journalisation plus détaillée
+import json # Ensure this is imported for json.dumps
 
 from google.cloud import aiplatform
-from google.auth.transport.requests import Request # Pour le client d'API personnalisé
-from google.oauth2.service_account import Credentials as ServiceAccountCredentials # Si utilisation de clé SA
-from google.oauth2 import default as default_credentials # Pour ADC
+# from google.auth.transport.requests import Request # Currently unused
+# from google.oauth2.service_account import Credentials as ServiceAccountCredentials # Currently unused
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-# --- Configuration Vertex AI ---
-PROJECT_ID_NUMBER = os.getenv("GOOGLE_CLOUD_PROJECT") # Devrait être le numéro du projet
+# --- Vertex AI Configuration ---
+PROJECT_ID_NUMBER = os.getenv("GOOGLE_CLOUD_PROJECT")
 VERTEX_AI_LOCATION = os.getenv("VERTEX_AI_LOCATION")
-# VERTEX_AI_ENDPOINT_ID DOIT être le chemin complet : projects/.../endpoints/...
 FULL_VERTEX_AI_ENDPOINT_PATH = os.getenv("VERTEX_AI_ENDPOINT_ID")
 
 
-# Vérifier si nous utilisons un point de terminaison dédié (basé sur le message d'erreur précédent)
-# L'URL de base pour les points de terminaison dédiés
-# Exemple: 786455378580733952.us-central1-265233472303.prediction.vertexai.goog
-# Nous allons construire cela dynamiquement ou le récupérer depuis une variable d'env si nécessaire
-# Pour l'instant, nous allons supposer que FULL_VERTEX_AI_ENDPOINT_PATH est le chemin standard
-# et nous allons déterminer si nous devons utiliser un client d'API personnalisé pour le domaine dédié.
-
-# Le SDK Python de Vertex AI devrait gérer les points de terminaison dédiés si l'endpoint
-# est correctement initialisé avec le nom complet du point de terminaison.
-# Cependant, si le SDK ne gère pas le changement de domaine pour les prédictions
-# vers le domaine .prediction.vertexai.goog, nous devrons utiliser un client HTTP plus direct.
-
-# Pour l'instant, essayons avec le SDK standard. Si cela échoue avec une erreur
-# similaire à "Dedicated Endpoint cannot be accessed through shared domain",
-# nous devrons passer à un client HTTP personnalisé.
-# Le SDK google-cloud-aiplatform devrait être capable de gérer cela si on lui donne le bon
-# nom de point de terminaison COMPLET au format projects/PROJECT_NUM/locations/LOC/endpoints/ENDPOINT_NUM.
-
-# Initialisation de Vertex AI (faite une fois globalement)
 if PROJECT_ID_NUMBER and VERTEX_AI_LOCATION:
-    aiplatform.init(project=PROJECT_ID_NUMBER, location=VERTEX_AI_LOCATION)
+    try:
+        aiplatform.init(project=PROJECT_ID_NUMBER, location=VERTEX_AI_LOCATION)
+        app.logger.info(f"Vertex AI SDK initialized for project {PROJECT_ID_NUMBER} in {VERTEX_AI_LOCATION}")
+    except Exception as e_init:
+        app.logger.error(f"Failed to initialize Vertex AI SDK: {e_init}", exc_info=True)
 else:
-    app.logger.warning("Vertex AI Project ID ou Location non défini. Les appels API échoueront.")
+    app.logger.warning("Vertex AI Project ID or Location not defined. API calls will likely fail.")
 
 
-def predict_medgemma_chat(
+def predict_medgemma_chat( # Consider renaming if it's no longer strictly "chat" input
     system_prompt: str,
     user_prompt: str,
     max_tokens: int = 1024,
     temperature: float = 0.3
 ):
     if not FULL_VERTEX_AI_ENDPOINT_PATH:
-        app.logger.error("FULL_VERTEX_AI_ENDPOINT_PATH (depuis VERTEX_AI_ENDPOINT_ID) n'est pas défini.")
-        raise ValueError("VERTEX_AI_ENDPOINT_ID n'est pas défini dans l'environnement.")
+        app.logger.error("FULL_VERTEX_AI_ENDPOINT_PATH (from VERTEX_AI_ENDPOINT_ID) is not defined.")
+        raise ValueError("VERTEX_AI_ENDPOINT_ID is not defined in the environment.")
 
-    # Le SDK Python utilise le nom complet du point de terminaison pour déterminer comment l'appeler.
-    # Il devrait gérer les points de terminaison publics et dédiés/privés correctement.
-    endpoint = aiplatform.Endpoint(FULL_VERTEX_AI_ENDPOINT_PATH)
-    app.logger.info(f"Utilisation du point de terminaison Vertex AI : {FULL_VERTEX_AI_ENDPOINT_PATH}")
+    try:
+        endpoint = aiplatform.Endpoint(FULL_VERTEX_AI_ENDPOINT_PATH)
+        app.logger.info(f"Using Vertex AI Endpoint: {FULL_VERTEX_AI_ENDPOINT_PATH}")
+    except Exception as e_endpoint_init:
+        app.logger.error(f"Failed to initialize Vertex AI Endpoint object for {FULL_VERTEX_AI_ENDPOINT_PATH}: {e_endpoint_init}", exc_info=True)
+        raise ValueError(f"Failed to initialize Vertex AI Endpoint: {e_endpoint_init}")
 
-
-    messages = []
-    if system_prompt:
-        messages.append({
-            "role": "system",
-            "content": [{"type": "text", "text": system_prompt}]
-        })
-    
-    user_content = [{"type": "text", "text": user_prompt}]
-    messages.append({
-        "role": "user",
-        "content": user_content
-    })
+    full_prompt_text = ""
+    if system_prompt: 
+        full_prompt_text += f"System: {system_prompt}\n\n" 
+    full_prompt_text += f"User: {user_prompt}"
 
     instances = [
         {
-            "@requestFormat": "chatCompletions",
-            "messages": messages,
-            "max_tokens": max_tokens
+            "prompt": full_prompt_text
         }
     ]
     
-    # Les paramètres comme la température sont parfois envoyés dans l'instance elle-même
-    # pour les modèles de type chat, ou parfois comme un paramètre de niveau supérieur.
-    # Pour votre modèle, la température n'était pas dans l'instance de la requête curl.
-    # Essayons de la passer comme paramètre de niveau supérieur à la méthode predict().
     parameters_for_predict_call = {
-        "temperature": temperature
-        # Si d'autres paramètres de niveau supérieur sont nécessaires, ajoutez-les ici.
+        "temperature": temperature,
+        "maxOutputTokens": max_tokens 
     }
-    # Si la température doit être dans l'instance :
-    # instances[0]["temperature"] = temperature # (Vérifiez la doc de votre modèle)
 
-
-    try:
-        app.logger.info(f"Envoi de la requête à Vertex AI. Instance (partielle) : {json.dumps(instances[0]['messages'], indent=2)}")
+    # This is the main try block for the Vertex AI call and response processing
+    try: 
+        app.logger.info(f"Sending request to Vertex AI. Instance (prompt): {json.dumps(instances[0], indent=2, default=str)}")
+        app.logger.info(f"Parameters for predict call: {json.dumps(parameters_for_predict_call, indent=2, default=str)}")
+        
         prediction_response = endpoint.predict(instances=instances, parameters=parameters_for_predict_call)
-        app.logger.info("Réponse reçue de Vertex AI.")
+        app.logger.info("Response received from Vertex AI.")
 
-        # --- ANALYSE DE LA RÉPONSE BASÉE SUR VOTRE SORTIE CURL ---
+        # --- ENHANCED LOGGING FOR THE RESPONSE ---
+        app.logger.info(f"Raw prediction_response object type: {type(prediction_response)}")
+        app.logger.debug(f"Attributes and methods of prediction_response: {dir(prediction_response)}") 
+        
+        if hasattr(prediction_response, 'predictions'):
+            app.logger.info(f"prediction_response.predictions type: {type(prediction_response.predictions)}")
+            # This is a nested try-except for logging the predictions content
+            try: 
+                predictions_log_content = json.dumps(prediction_response.predictions, indent=2, default=str)
+                if len(predictions_log_content) > 2000: 
+                     predictions_log_content = predictions_log_content[:2000] + "..."
+                app.logger.info(f"prediction_response.predictions content (json.dumps attempt): {predictions_log_content}")
+            except TypeError: # This except belongs to the nested try
+                app.logger.info(f"prediction_response.predictions content (raw str): {str(prediction_response.predictions)[:2000]}")
+        else: # This else belongs to 'if hasattr(prediction_response, 'predictions')'
+            app.logger.warning("prediction_response object does not have a 'predictions' attribute.")
+        
+        if hasattr(prediction_response, 'deployed_model_id'):
+            app.logger.info(f"Deployed Model ID from response: {prediction_response.deployed_model_id}")
+        # --- END OF ENHANCED LOGGING ---
+
         prediction_output = "Erreur : Impossible d'analyser la prédiction."
         
-        # prediction_response.predictions est une liste d'objets (ou dicts)
-        if prediction_response.predictions and len(prediction_response.predictions) > 0:
-            # Contrairement à d'autres modèles, votre `predictions` est un OBJET, pas une liste directement.
-            # Le SDK le convertit peut-être en une liste avec un seul élément dict.
-            # Vérifions la structure réelle de prediction_response.predictions
+        if hasattr(prediction_response, 'predictions') and \
+           prediction_response.predictions and \
+           isinstance(prediction_response.predictions, list) and \
+           len(prediction_response.predictions) > 0:
             
-            first_prediction_obj = prediction_response.predictions[0] # Supposons que c'est un dict
+            first_prediction_obj = prediction_response.predictions[0] 
+            app.logger.info(f"Type de first_prediction_obj: {type(first_prediction_obj)}")
 
-            if isinstance(first_prediction_obj, dict):
-                app.logger.debug(f"Premier objet de prédiction (dict) : {json.dumps(first_prediction_obj, indent=2)}")
-                if 'choices' in first_prediction_obj and \
+            if isinstance(first_prediction_obj, str):
+                prediction_output = first_prediction_obj
+                app.logger.info(f"Prédiction extraite directement (first_prediction_obj est une chaîne de caractères) : {prediction_output[:200]}...")
+                # Attempt to extract content after "Output:" or "Réponse:"
+                # This needs to be robust if the model output format varies
+                processed_output = prediction_output # Start with the full string
+                if "Output:" in processed_output:
+                    parts = processed_output.split("Output:", 1)
+                    if len(parts) > 1:
+                        processed_output = parts[1].strip()
+                elif "Réponse:" in processed_output:
+                     parts = processed_output.split("Réponse:", 1)
+                     if len(parts) > 1:
+                        processed_output = parts[1].strip()
+                
+                if processed_output != prediction_output: # If stripping occurred
+                    app.logger.info(f"Après traitement de 'Output:'/'Réponse:': {processed_output[:200]}...")
+                    prediction_output = processed_output
+                else: # If "Output:" or "Réponse:" was not found, or no text after it
+                    app.logger.info("Aucun marqueur 'Output:' ou 'Réponse:' trouvé pour le post-traitement, ou aucun texte après.")
+                    # Decide if you want to return the full string or indicate an issue
+                    # For now, we return the (potentially still unprocessed) string
+                    
+            elif isinstance(first_prediction_obj, dict): 
+                app.logger.debug(f"Premier objet de prédiction (dict) : {json.dumps(first_prediction_obj, indent=2, default=str)}")
+                if 'content' in first_prediction_obj: 
+                    prediction_output = first_prediction_obj['content']
+                    app.logger.info("Prédiction extraite (structure simple 'content').")
+                elif 'choices' in first_prediction_obj and \
                    isinstance(first_prediction_obj['choices'], list) and \
                    len(first_prediction_obj['choices']) > 0:
-                    
                     first_choice = first_prediction_obj['choices'][0]
                     if isinstance(first_choice, dict) and \
                        'message' in first_choice and \
                        isinstance(first_choice['message'], dict) and \
                        'content' in first_choice['message']:
-                        
                         prediction_output = first_choice['message']['content']
                         finish_reason = first_choice.get('finish_reason', 'N/A')
-                        app.logger.info(f"Prédiction extraite avec succès. Fin : {finish_reason}")
+                        app.logger.info(f"Prédiction extraite avec succès (structure 'choices'). Fin : {finish_reason}")
                     else:
                         app.logger.error("Structure 'message' ou 'content' manquante ou incorrecte dans 'choices[0]'.")
+                elif 'candidates' in first_prediction_obj and \
+                     isinstance(first_prediction_obj.get('candidates'), list) and \
+                     len(first_prediction_obj['candidates']) > 0:
+                    try:
+                        prediction_output = first_prediction_obj['candidates'][0]['content']['parts'][0]['text']
+                        app.logger.info("Prédiction extraite (structure type Gemini).")
+                    except (KeyError, IndexError, TypeError) as e_gemini:
+                        app.logger.error(f"Erreur lors de l'analyse de la structure Gemini : {e_gemini}")
                 else:
-                    app.logger.error("Structure 'choices' manquante ou incorrecte dans la prédiction.")
-            else:
-                # Si ce n'est pas un dict, c'est peut-être un objet protobuf. Essayons de le convertir.
-                try:
-                    # Nécessite : from google.protobuf import json_format
-                    # prediction_dict = json_format.MessageToDict(first_prediction_obj)
-                    # app.logger.debug(f"Premier objet de prédiction (converti en dict) : {json.dumps(prediction_dict, indent=2)}")
-                    # Réessayez la logique d'analyse avec prediction_dict ici...
-                    app.logger.error(f"Le premier objet de prédiction n'est pas un dictionnaire : {type(first_prediction_obj)}. Contenu brut (partiel) : {str(first_prediction_obj)[:500]}")
-
-                except Exception as conv_err:
-                    app.logger.error(f"Impossible de convertir l'objet de prédiction en dict : {conv_err}")
+                    app.logger.error("Structure 'choices' manquante ou incorrecte, ou autre structure non reconnue dans la prédiction.")
+            else: 
+                app.logger.error(f"Le premier objet de prédiction n'est ni une chaîne ni un dictionnaire : {type(first_prediction_obj)}. Contenu brut (partiel) : {str(first_prediction_obj)[:500]}")
         else:
-            app.logger.warning("Aucune prédiction reçue de Vertex AI ou la liste des prédictions est vide.")
-            if hasattr(prediction_response, 'raw_response'): # Certaines bibliothèques ont ça
-                 app.logger.warning(f"Réponse brute : {prediction_response.raw_response}")
-
+            app.logger.warning("Aucune prédiction reçue (prediction_response.predictions est vide, None, non une liste, ou n'existe pas).")
 
         return prediction_output
 
-    except Exception as e:
+    # This 'except' belongs to the main 'try' block above
+    except Exception as e: 
         app.logger.error(f"Erreur de prédiction Vertex AI : {e}", exc_info=True)
-        # Vérifier si l'erreur vient de l'API Google pour plus de détails
         error_details = str(e)
-        if hasattr(e, 'details'): # Pour google.api_core.exceptions
-             error_details = e.details() if callable(e.details) else str(e.details)
-        elif hasattr(e, 'message'):
+        if hasattr(e, 'grpc_status_code'): 
+            error_details = f"gRPC status: {e.grpc_status_code}, Details: {getattr(e, 'message', str(e))}"
+        elif hasattr(e, 'details') and callable(e.details):
+             error_details = e.details()
+        elif hasattr(e, 'message') and e.message:
              error_details = e.message
-        app.logger.error(f"Détails de l'erreur API : {error_details}")
+        
+        app.logger.error(f"Détails de l'erreur API extraits : {error_details}")
         raise ValueError(f"Échec de l'appel à Vertex AI : {error_details}")
 
 
@@ -188,7 +201,7 @@ def generate_report():
         elif report_type == "Explain Medical Terminology":
             system_prompt = "Vous êtes un expert pour expliquer la terminologie médicale complexe en termes simples et compréhensibles."
             user_prompt = f"Veuillez expliquer tous les termes ou concepts médicaux complexes trouvés dans le texte suivant. Si des termes spécifiques ne sont pas mis en évidence, expliquez les concepts clés présents :\n\n---\n{input_text}\n---"
-        else:
+        else: 
             user_prompt = f"Concernant le contexte médical suivant :\n\n---\n{input_text}\n---\n\nVeuillez effectuer la tâche suivante : {report_type}"
         
         app.logger.info(f"Prompt système : {system_prompt}")
@@ -197,24 +210,20 @@ def generate_report():
         report_content = predict_medgemma_chat(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            max_tokens=1500, # Augmentez si nécessaire, attention à "finish_reason": "length"
+            max_tokens=1500, 
             temperature=0.3
         )
         
         app.logger.info('Rapport généré avec succès depuis Vertex AI.')
         return jsonify({'report': report_content})
 
-    except ValueError as ve: # Capturer notre erreur personnalisée de predict_medgemma_chat
-        app.logger.error(f"Erreur de valeur dans /api/generate-report: {ve}", exc_info=True)
+    except ValueError as ve: 
+        app.logger.error(f"Erreur de valeur dans /api/generate-report: {ve}", exc_info=False) 
         return jsonify({'error': str(ve)}), 500
     except Exception as e:
-        app.logger.error(f"Erreur dans /api/generate-report: {e}", exc_info=True)
-        return jsonify({'error': f'Une erreur interne est survenue : {str(e)}'}), 500
+        app.logger.error(f"Erreur inattendue dans /api/generate-report: {e}", exc_info=True)
+        return jsonify({'error': f'Une erreur interne non gérée est survenue : {str(e)}'}), 500
 
 if __name__ == '__main__':
-    # Configurer la journalisation pour voir les messages DEBUG s'ils sont utiles
-    # import logging
-    # logging.basicConfig(level=logging.DEBUG) # Ou app.logger.setLevel(logging.DEBUG)
-
     port = int(os.environ.get('FLASK_RUN_PORT', 5001))
     app.run(debug=(os.getenv('FLASK_ENV') == 'development'), host='0.0.0.0', port=port)
