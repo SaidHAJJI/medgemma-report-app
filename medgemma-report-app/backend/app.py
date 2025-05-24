@@ -101,26 +101,39 @@ def predict_medgemma_chat( # Consider renaming if it's no longer strictly "chat"
             first_prediction_obj = prediction_response.predictions[0] 
             app.logger.info(f"Type de first_prediction_obj: {type(first_prediction_obj)}")
 
+                                        # ... inside the 'if isinstance(first_prediction_obj, str):' block
             if isinstance(first_prediction_obj, str):
                 prediction_output = first_prediction_obj
-                app.logger.info(f"Prédiction extraite directement (first_prediction_obj est une chaîne de caractères) : {prediction_output[:200]}...")
-                # Attempt to extract content after "Output:" or "Réponse:"
-                # This needs to be robust if the model output format varies
-                processed_output = prediction_output # Start with the full string
-                if "Output:" in processed_output:
+                app.logger.info(f"Prédiction extraite directement (brute) : {prediction_output[:300]}...")
+                
+                processed_output = prediction_output 
+
+                # Try to find the most specific start of the actual content
+                # Order matters here: check for more specific prefixes first.
+                if "Résumé :" in processed_output: # French "Summary :"
+                     parts = processed_output.split("Résumé :", 1)
+                     if len(parts) > 1:
+                        processed_output = parts[1].strip()
+                elif "Output:" in processed_output: # English "Output:"
                     parts = processed_output.split("Output:", 1)
                     if len(parts) > 1:
                         processed_output = parts[1].strip()
-                elif "Réponse:" in processed_output:
+                elif "Réponse:" in processed_output: # French "Response:"
                      parts = processed_output.split("Réponse:", 1)
                      if len(parts) > 1:
                         processed_output = parts[1].strip()
-                
-                if processed_output != prediction_output: # If stripping occurred
-                    app.logger.info(f"Après traitement de 'Output:'/'Réponse:': {processed_output[:200]}...")
+                # You could add more generic stripping if the model sometimes just outputs without a clear prefix
+                # For instance, if "System: " is always there before the real summary:
+                elif "System: " in processed_output and len(processed_output.split("System: ", 1)) > 1:
+                    # This is a bit broad, be careful it doesn't strip actual content if "System: " appears mid-text
+                    # Might be better to rely on the "Résumé :", "Output:", "Réponse:" markers
+                    pass # Avoid overly broad stripping for now unless necessary
+
+                if processed_output != prediction_output:
+                    app.logger.info(f"Après post-traitement : {processed_output[:200]}...")
                     prediction_output = processed_output
-                else: # If "Output:" or "Réponse:" was not found, or no text after it
-                    app.logger.info("Aucun marqueur 'Output:' ou 'Réponse:' trouvé pour le post-traitement, ou aucun texte après.")
+                else:
+                    app.logger.info("Aucun marqueur connu pour le post-traitement trouvé, ou aucun texte après. Retour de la chaîne telle quelle ou précédemment traitée.")
                     # Decide if you want to return the full string or indicate an issue
                     # For now, we return the (potentially still unprocessed) string
                     
